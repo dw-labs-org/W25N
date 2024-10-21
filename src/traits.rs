@@ -108,7 +108,7 @@ pub trait NandFlash: ReadNandFlash {
 }
 
 /// Return whether an erase operation is aligned and within bounds.
-pub fn check_erase<T: NandFlash>(flash: &T, from: u32, to: u32) -> Result<(), NandFlashErrorKind> {
+pub fn check_erase<T: NandFlash>(flash: &T, from: u64, to: u64) -> Result<(), NandFlashErrorKind> {
     let (from, to) = (from as usize, to as usize);
     if from > to || to > flash.capacity() {
         return Err(NandFlashErrorKind::OutOfBounds);
@@ -122,7 +122,7 @@ pub fn check_erase<T: NandFlash>(flash: &T, from: u32, to: u32) -> Result<(), Na
 /// Return whether a write operation is aligned and within bounds.
 pub fn check_write<T: NandFlash>(
     flash: &T,
-    offset: u32,
+    offset: u64,
     length: usize,
 ) -> Result<(), NandFlashErrorKind> {
     check_slice(flash, T::WRITE_SIZE, offset, length)
@@ -131,7 +131,7 @@ pub fn check_write<T: NandFlash>(
 fn check_slice<T: ReadNandFlash>(
     flash: &T,
     align: usize,
-    offset: u32,
+    offset: u64,
     length: usize,
 ) -> Result<(), NandFlashErrorKind> {
     let offset = offset as usize;

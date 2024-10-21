@@ -1,3 +1,5 @@
+use core::default;
+
 use embedded_hal::spi::{self};
 
 use crate::{
@@ -8,7 +10,10 @@ use crate::{
     },
     mem::{BlockAddressIterator, ColumnAddress, PageAddress},
     registers::{Jedec, Status1, Status2, Status3},
-    traits::{self, check_read, ErrorType, NandFlashError, NandFlashErrorKind},
+    traits::{
+        self, check_erase, check_read, check_write, ErrorType, NandFlash, NandFlashError,
+        NandFlashErrorKind,
+    },
 };
 
 pub struct W25N<SPI> {
@@ -170,7 +175,9 @@ where
         ])?;
         self.wait_for_operation()?;
         if self.read_status_3()?.e_fail() {
-            Err(Error::EraseFailure)
+            Err(Error::Nand(NandFlashErrorKind::BlockFail(Some(
+                pa.to_byte_address(),
+            ))))
         } else {
             Ok(())
         }
@@ -246,7 +253,7 @@ where
     /// Returns iterator through the blocks returning their status byte
     pub fn block_status_iter(&mut self) -> BlockStatusIterator<'_, SPI> {
         BlockStatusIterator {
-            block_iter: BlockAddressIterator::new(self.page_count),
+            block_iter: BlockAddressIterator::new(Default::default(), self.page_count),
             w25: self,
         }
     }
@@ -288,19 +295,75 @@ impl<SPI> traits::ReadNandFlash for W25N<SPI>
 where
     SPI: spi::SpiDevice + core::fmt::Debug,
 {
+    // Page size of W25N. This could be 1 but matching page size is way easier and faster
     const READ_SIZE: usize = 2048;
 
     fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), Self::Error> {
+        // check the read aligns with pages and doesnt got beyond end of storage
         check_read(self, offset, bytes.len())?;
+        // Get page address from byte address
+        let mut pa = PageAddress::from_byte_address(offset);
+        // Go through each page requested
+        for page in bytes.chunks_exact_mut(Self::READ_SIZE) {
+            // load the page into the buffer
+            self.page_data_read(pa.increment_page())?;
+            // Read the data from the buffer
+            self.read_data(0x00.into(), page)?;
+        }
         Ok(())
     }
 
     fn capacity(&self) -> usize {
-        todo!()
+        // Page size * page count
+        (1 << 11) * (1 << 17)
     }
 
     fn block_status(&mut self, address: u64) -> Result<traits::BlockStatus, Self::Error> {
-        todo!()
+        self.page_data_read(PageAddress::from_byte_address(address))?;
+        let mut marker = [0];
+        self.read_data(2048.into(), &mut marker)?;
+        // TODO: Check ECC
+        if marker[0] == 0xFF {
+            Ok(traits::BlockStatus::MarkedOk)
+        } else {
+            Ok(traits::BlockStatus::Failed)
+        }
+    }
+}
+
+impl<SPI> NandFlash for W25N<SPI>
+where
+    SPI: spi::SpiDevice + core::fmt::Debug,
+{
+    const WRITE_SIZE: usize = 2048;
+
+    const ERASE_SIZE: usize = 2048 * 64;
+
+    fn erase(&mut self, from: u64, to: u64) -> Result<(), Self::Error> {
+        // Check from and to align with block boundaries
+        check_erase(self, from, to)?;
+        for pa in BlockAddressIterator::new(
+            PageAddress::from_byte_address(from),
+            PageAddress::from_byte_address(to),
+        ) {
+            self.block_erase(pa)?;
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), Self::Error> {
+        // check alignment with Page and boundaries
+        check_write(self, offset, bytes.len())?;
+        // Page address from byte address
+        let mut pa = PageAddress::from_byte_address(offset);
+        // Go through each page to write
+        for page in bytes.chunks_exact(Self::WRITE_SIZE) {
+            // load the page into the buffer
+            self.load_program_data(0.into(), page)?;
+            // Write the data from buffer
+            self.program_execute(pa.increment_page())?;
+        }
+        Ok(())
     }
 }
 
@@ -317,13 +380,8 @@ where
 {
     fn kind(&self) -> traits::NandFlashErrorKind {
         match self {
-            Error::SPI(_) => todo!(),
-            Error::WriteEnable => todo!(),
-            Error::WriteDisable => todo!(),
-            Error::EraseFailure => todo!(),
-            Error::ProgramFailure => todo!(),
-            Error::BlockProtect(_) => todo!(),
             Error::Nand(nand_flash_error_kind) => *nand_flash_error_kind,
+            _ => NandFlashErrorKind::Other,
         }
     }
 }
