@@ -1,7 +1,4 @@
-use embedded_hal::{
-    i2c::Operation,
-    spi::{self},
-};
+use embedded_hal::spi::{self};
 
 use crate::{
     commands::{
@@ -9,12 +6,20 @@ use crate::{
         RANDOM_PROGRAM_DATA_LOAD, READ, READ_REG, RELEASE_POWER_DOWN, RESET, STATUS_REGISTER_1,
         STATUS_REGISTER_2, STATUS_REGISTER_3, WRITE_DISABLE, WRITE_ENABLE, WRITE_REG,
     },
-    mem::{ColumnAddress, PageAddress},
+    mem::{BlockAddressIterator, ColumnAddress, PageAddress},
     registers::{Jedec, Status1, Status2, Status3},
+    traits::{self, check_read, ErrorType, NandFlashError, NandFlashErrorKind},
 };
 
 pub struct W25N<SPI> {
     spi: SPI,
+    page_count: PageAddress,
+}
+
+impl<SPI> W25N<SPI> {
+    pub fn new(spi: SPI, page_count: PageAddress) -> Self {
+        Self { spi, page_count }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -22,12 +27,27 @@ pub enum Error<SPI>
 where
     SPI: spi::SpiDevice,
 {
+    /// Errors from the SPI bus
     SPI(SPI::Error),
+    /// Errors that map to NandFlashErrorKind
+    Nand(NandFlashErrorKind),
+    /// Failed to Enable Write
     WriteEnable,
+    /// Failed to enable Read
     WriteDisable,
+    /// Failed to erase
     EraseFailure,
     ProgramFailure,
     BlockProtect(u8),
+}
+
+impl<SPI> From<NandFlashErrorKind> for Error<SPI>
+where
+    SPI: spi::SpiDevice,
+{
+    fn from(value: NandFlashErrorKind) -> Self {
+        Error::Nand(value)
+    }
 }
 
 type WResult<T, SPI> = Result<T, Error<SPI>>;
@@ -221,5 +241,89 @@ where
     /// Exit deep power down state
     pub fn release_power_down(&mut self) -> WResult<(), SPI> {
         self.write(&[RELEASE_POWER_DOWN])
+    }
+
+    /// Returns iterator through the blocks returning their status byte
+    pub fn block_status_iter(&mut self) -> BlockStatusIterator<'_, SPI> {
+        BlockStatusIterator {
+            block_iter: BlockAddressIterator::new(self.page_count),
+            w25: self,
+        }
+    }
+}
+
+pub struct BlockStatusIterator<'a, SPI> {
+    w25: &'a mut W25N<SPI>,
+    block_iter: BlockAddressIterator,
+}
+
+impl<'a, SPI> Iterator for BlockStatusIterator<'a, SPI>
+where
+    SPI: spi::SpiDevice,
+{
+    type Item = Result<(PageAddress, [u8; 3]), Error<SPI>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // get next block address
+        let pa = self.block_iter.next()?;
+        // load page into buf
+        match self.w25.page_data_read(pa) {
+            Ok(_) => {
+                let mut buf = [0; 3];
+                match self.w25.read_data(ColumnAddress::new(0), &mut buf[0..2]) {
+                    Ok(_) => match self.w25.read_data(ColumnAddress::new(2048), &mut buf[2..]) {
+                        Ok(_) => Some(Ok((pa, buf))),
+                        Err(e) => Some(Err(e)),
+                    },
+                    Err(e) => Some(Err(e)),
+                }
+            }
+            Err(e) => Some(Err(e)),
+        }
+        // Read the first byte after the 2048 main array of page
+    }
+}
+
+impl<SPI> traits::ReadNandFlash for W25N<SPI>
+where
+    SPI: spi::SpiDevice + core::fmt::Debug,
+{
+    const READ_SIZE: usize = 2048;
+
+    fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), Self::Error> {
+        check_read(self, offset, bytes.len())?;
+        Ok(())
+    }
+
+    fn capacity(&self) -> usize {
+        todo!()
+    }
+
+    fn block_status(&mut self, address: u64) -> Result<traits::BlockStatus, Self::Error> {
+        todo!()
+    }
+}
+
+impl<SPI> ErrorType for W25N<SPI>
+where
+    SPI: spi::SpiDevice + core::fmt::Debug,
+{
+    type Error = Error<SPI>;
+}
+
+impl<SPI> NandFlashError for Error<SPI>
+where
+    SPI: spi::SpiDevice + core::fmt::Debug,
+{
+    fn kind(&self) -> traits::NandFlashErrorKind {
+        match self {
+            Error::SPI(_) => todo!(),
+            Error::WriteEnable => todo!(),
+            Error::WriteDisable => todo!(),
+            Error::EraseFailure => todo!(),
+            Error::ProgramFailure => todo!(),
+            Error::BlockProtect(_) => todo!(),
+            Error::Nand(nand_flash_error_kind) => *nand_flash_error_kind,
+        }
     }
 }
