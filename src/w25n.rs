@@ -313,7 +313,7 @@ where
         Ok(())
     }
 
-    fn capacity(&self) -> usize {
+    fn capacity(&self) -> u64 {
         // Page size * page count
         (1 << 11) * (1 << 17)
     }

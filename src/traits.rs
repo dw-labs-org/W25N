@@ -50,7 +50,7 @@ pub trait ReadNandFlash: ErrorType {
     fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), Self::Error>;
 
     /// The capacity of the peripheral in bytes.
-    fn capacity(&self) -> usize;
+    fn capacity(&self) -> u64;
 
     /// Check if the block is marked as bad
     fn block_status(&mut self, address: u64) -> Result<BlockStatus, Self::Error>;
@@ -97,7 +97,7 @@ pub trait NandFlash: ReadNandFlash {
     fn erase(&mut self, from: u64, to: u64) -> Result<(), Self::Error>;
 
     /// If power is lost during write, the contents of the written words are undefined,
-    /// as are the erase block(s) in which the words are located
+    /// but the rest of the page is guaranteed to be unchanged.
     /// It is not allowed to write to the same word twice.
     ///
     /// # Errors
@@ -109,11 +109,10 @@ pub trait NandFlash: ReadNandFlash {
 
 /// Return whether an erase operation is aligned and within bounds.
 pub fn check_erase<T: NandFlash>(flash: &T, from: u64, to: u64) -> Result<(), NandFlashErrorKind> {
-    let (from, to) = (from as usize, to as usize);
     if from > to || to > flash.capacity() {
         return Err(NandFlashErrorKind::OutOfBounds);
     }
-    if from % T::ERASE_SIZE != 0 || to % T::ERASE_SIZE != 0 {
+    if from % T::ERASE_SIZE as u64 != 0 || to % T::ERASE_SIZE as u64 != 0 {
         return Err(NandFlashErrorKind::NotAligned);
     }
     Ok(())
@@ -134,11 +133,10 @@ fn check_slice<T: ReadNandFlash>(
     offset: u64,
     length: usize,
 ) -> Result<(), NandFlashErrorKind> {
-    let offset = offset as usize;
-    if length > flash.capacity() || offset > flash.capacity() - length {
+    if length as u64 > flash.capacity() || offset > (flash.capacity() - (length as u64)) {
         return Err(NandFlashErrorKind::OutOfBounds);
     }
-    if offset % align != 0 || length % align != 0 {
+    if offset % align as u64 != 0 || length % align != 0 {
         return Err(NandFlashErrorKind::NotAligned);
     }
     Ok(())
